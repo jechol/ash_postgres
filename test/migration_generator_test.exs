@@ -4402,7 +4402,7 @@ defmodule AshPostgres.MigrationGeneratorTest do
              "Expected no new migration files (count #{count_after_first_drop}), got #{count_after_second}"
     end
 
-    test "when user opts out of drop, snapshot is updated and we do not ask again", %{
+    test "when user opts out of drop, a new snapshot is created and we do not ask again", %{
       snapshot_path: snapshot_path,
       migration_path: migration_path
     } do
@@ -4437,7 +4437,17 @@ defmodule AshPostgres.MigrationGeneratorTest do
         name: "add_opt_out_tables"
       )
 
-      assert File.exists?(Path.join(snapshot_path, "test_repo/opt_out_messages"))
+      snapshot_dir = Path.join(snapshot_path, "test_repo/opt_out_messages")
+
+      assert File.exists?(snapshot_dir)
+
+      assert [snapshot_before] =
+               snapshot_dir
+               |> Path.join("*.json")
+               |> Path.wildcard()
+               |> Enum.sort()
+
+      snapshot_before_contents = File.read!(snapshot_before)
 
       defdomain([OptOutPost])
 
@@ -4465,8 +4475,25 @@ defmodule AshPostgres.MigrationGeneratorTest do
       assert count_after_opt_out == count_before,
              "Expected no new migration when opting out of drop, got #{count_after_opt_out - count_before} new file(s)"
 
-      assert File.exists?(Path.join(snapshot_path, "test_repo/opt_out_messages")),
-             "Opted-out table snapshot dir should remain"
+      assert File.exists?(snapshot_dir),
+              "Opted-out table snapshot dir should remain"
+
+      snapshot_files_after_opt_out =
+        snapshot_dir
+        |> Path.join("*.json")
+        |> Path.wildcard()
+        |> Enum.sort()
+
+      assert length(snapshot_files_after_opt_out) == 2
+
+      assert File.read!(snapshot_before) == snapshot_before_contents,
+             "Opt-out should not rewrite the existing snapshot file"
+
+      latest_snapshot = List.last(snapshot_files_after_opt_out)
+
+      refute latest_snapshot == snapshot_before
+
+      assert File.read!(latest_snapshot) =~ ~s("drop_table_opted_out": true)
 
       AshPostgres.MigrationGenerator.generate(Domain,
         snapshot_path: snapshot_path,
@@ -4485,7 +4512,7 @@ defmodule AshPostgres.MigrationGeneratorTest do
       assert count_after_second == count_after_opt_out,
              "Expected no new migration on second run after opt-out (count #{count_after_opt_out}), got #{count_after_second}"
 
-      assert File.exists?(Path.join(snapshot_path, "test_repo/opt_out_messages"))
+      assert File.exists?(snapshot_dir)
     end
 
     test "drop table migration uses correct prefix when resource has schema", %{

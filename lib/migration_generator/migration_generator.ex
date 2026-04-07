@@ -1337,6 +1337,8 @@ defmodule AshPostgres.MigrationGenerator do
     Enum.map(snapshots, fn snapshot ->
       snapshot_binary = snapshot_to_binary(snapshot)
 
+      snapshot_file = new_snapshot_file_path(snapshot, repo_name, opts, tenant?)
+
       snapshot_folder =
         if tenant? do
           opts
@@ -1350,16 +1352,6 @@ defmodule AshPostgres.MigrationGenerator do
         end
 
       dev = if opts.dev, do: "_dev"
-
-      snapshot_file =
-        if snapshot.schema do
-          Path.join(
-            snapshot_folder,
-            "#{snapshot.schema}.#{snapshot.table}/#{timestamp()}#{dev}.json"
-          )
-        else
-          Path.join(snapshot_folder, "#{snapshot.table}/#{timestamp()}#{dev}.json")
-        end
 
       File.mkdir_p(Path.dirname(snapshot_file))
 
@@ -3205,33 +3197,28 @@ defmodule AshPostgres.MigrationGenerator do
     end
   end
 
-  defp get_latest_snapshot_file_path(snapshot, opts) do
-    folder = get_snapshot_folder(snapshot, opts)
-    snapshot_dir = get_snapshot_path(snapshot, folder)
-
-    if File.exists?(snapshot_dir) do
-      snapshot_files =
-        File.ls!(snapshot_dir)
-        |> Enum.filter(
-          &(String.match?(&1, ~r/^\d{14}\.json$/) or
-              (opts.dev and String.match?(&1, ~r/^\d{14}\_dev\.json$/)))
-        )
-
-      case snapshot_files do
-        [] ->
-          if snapshot.schema do
-            path = Path.join(folder, "#{snapshot.schema}.#{snapshot.table}.json")
-            if File.exists?(path), do: path, else: nil
-          else
-            path = Path.join(folder, "#{snapshot.table}.json")
-            if File.exists?(path), do: path, else: nil
-          end
-
-        files ->
-          Path.join(snapshot_dir, Enum.max(files))
+  defp new_snapshot_file_path(snapshot, repo_name, opts, tenant?) do
+    snapshot_folder =
+      if tenant? do
+        opts
+        |> snapshot_path(snapshot.repo)
+        |> Path.join(repo_name)
+        |> Path.join("tenants")
+      else
+        opts
+        |> snapshot_path(snapshot.repo)
+        |> Path.join(repo_name)
       end
+
+    dev = if opts.dev, do: "_dev"
+
+    if snapshot.schema do
+      Path.join(
+        snapshot_folder,
+        "#{snapshot.schema}.#{snapshot.table}/#{timestamp()}#{dev}.json"
+      )
     else
-      nil
+      Path.join(snapshot_folder, "#{snapshot.table}/#{timestamp()}#{dev}.json")
     end
   end
 
@@ -3239,18 +3226,17 @@ defmodule AshPostgres.MigrationGenerator do
     if opts.dry_run || opts.check || opts.snapshots_only do
       :ok
     else
-      case get_latest_snapshot_file_path(snapshot, opts) do
-        nil ->
-          :ok
+      snapshot
+      |> Map.put(:drop_table_opted_out, true)
+      |> snapshot_to_binary()
+      |> then(fn snapshot_binary ->
+        repo_name = repo_name(snapshot.repo)
+        tenant? = snapshot.multitenancy.strategy == :context
+        snapshot_file = new_snapshot_file_path(snapshot, repo_name, opts, tenant?)
 
-        path ->
-          path
-          |> File.read!()
-          |> Jason.decode!(keys: :atoms!)
-          |> Map.put(:drop_table_opted_out, true)
-          |> Jason.encode!(pretty: true)
-          |> then(&File.write!(path, &1))
-      end
+        File.mkdir_p!(Path.dirname(snapshot_file))
+        File.write!(snapshot_file, snapshot_binary)
+      end)
     end
   end
 
